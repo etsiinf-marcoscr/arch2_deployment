@@ -1,0 +1,903 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Cafe architecture - ECS Fargate sin CloudFront (ALB como punto de entrada)"
+# REQUISITO PREVIO: la VPC debe tener habilitados
+# 'DNS resolution' y 'DNS hostnames' antes de desplegar este stack.
+#
+# Punto de entrada: http://<SharedALBDNS>  /  https://<SharedALBDNS>
+#   /              → node-web-app    (app Node.js de proveedores)
+#   /web*          → cafe-static-web (nginx, web estática bakeada)
+#   /images*       → cafe-static-web (nginx, imágenes con ruta absoluta)
+#   /products*     → products-api    (Flask, DynamoDB)
+#   /create_report*→ report-service  (Flask, Aurora + S3 + SNS)
+#   /bean_products*→ report-service
+#
+# Cognito callback → https://<ALB>/web/callback.html (servido por nginx)
+
+Parameters:
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: "VPC con DNS resolution y DNS hostnames habilitados"
+
+  PublicSubnetOne:
+    Type: AWS::EC2::Subnet::Id
+    Description: "Subnet pública principal (us-east-1a)"
+
+  StudentEmail:
+    Type: String
+    Description: "Email para recibir reportes SNS y como usuario Cognito"
+
+  LabRoleArn:
+    Type: String
+    Description: "ARN del LabRole existente (ej: arn:aws:iam::123456789012:role/LabRole)"
+
+Resources:
+
+  # ───────────────────────────────────────────
+  # NETWORKING
+  # ───────────────────────────────────────────
+
+  ExtraSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcId
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: "10.0.2.0/24"
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: "ExtraSubnet-AZ2"
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "Subnets for Aurora"
+      SubnetIds:
+        - !Ref ExtraSubnet
+        - !Ref PublicSubnetOne
+
+  DataSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Aurora + Memcached"
+      SecurityGroupIngress:
+        - CidrIp: "0.0.0.0/0"
+          IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+        - CidrIp: "0.0.0.0/0"
+          IpProtocol: tcp
+          FromPort: 11211
+          ToPort: 11211
+      VpcId: !Ref VpcId
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "ALB publico HTTP+HTTPS"
+      SecurityGroupIngress:
+        - CidrIp: "0.0.0.0/0"
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+        - CidrIp: "0.0.0.0/0"
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+      VpcId: !Ref VpcId
+
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "ECS Fargate tasks, trafico desde el ALB"
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !Ref ALBSecurityGroup
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+        - SourceSecurityGroupId: !Ref ALBSecurityGroup
+          IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+        - SourceSecurityGroupId: !Ref ALBSecurityGroup
+          IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+      VpcId: !Ref VpcId
+
+  # ───────────────────────────────────────────
+  # CLOUDWATCH LOGS
+  # ───────────────────────────────────────────
+
+  LogGroupStaticWeb:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: "/ecs/cafe-static-web"
+      RetentionInDays: 1
+
+  LogGroupProductsApi:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: "/ecs/cafe-products-api"
+      RetentionInDays: 1
+
+  LogGroupReportService:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: "/ecs/cafe-report-service"
+      RetentionInDays: 1
+
+  LogGroupNodeWebApp:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: "/ecs/cafe-node-web-app"
+      RetentionInDays: 1
+
+  LogGroupSqsWorker:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: "/ecs/cafe-sqs-worker"
+      RetentionInDays: 1
+
+  # ───────────────────────────────────────────
+  # ECS CLUSTER
+  # ───────────────────────────────────────────
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: "cafe-cluster"
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+
+  # ───────────────────────────────────────────
+  # ALB ÚNICO - path-based routing
+  #
+  # Prioridades listener HTTP (HTTPS idéntico, creado en el script):
+  #   prio 10 → /products*      → products-api
+  #   prio 20 → /create_report* → report-service
+  #   prio 30 → /bean_products* → report-service
+  #   prio 40 → /web*           → static-web (nginx)
+  #   prio 50 → /images*        → static-web (nginx, rutas absolutas)
+  #   default → /               → node-web-app
+  # ───────────────────────────────────────────
+
+  SharedALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: "cafe-shared-alb"
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !Ref PublicSubnetOne
+        - !Ref ExtraSubnet
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+
+  TGNodeWebApp:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: "cafe-node-web-app-tg"
+      Port: 3000
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: "/"
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+
+  TGStaticWeb:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: "cafe-static-web-tg"
+      Port: 80
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: "/web/"
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+
+  TGProductsApi:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: "cafe-products-api-tg"
+      Port: 5000
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: "/products"
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+
+  TGReportService:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: "cafe-report-service-tg"
+      Port: 5000
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: "/"
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      Matcher:
+        HttpCode: "200-499"
+
+  # Listener HTTP:80 - default: node-web-app
+  SharedListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref SharedALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TGNodeWebApp
+
+  RuleProductsApi:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref SharedListener
+      Priority: 10
+      Conditions:
+        - Field: path-pattern
+          Values: ["/products*"]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TGProductsApi
+
+  RuleCreateReport:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref SharedListener
+      Priority: 20
+      Conditions:
+        - Field: path-pattern
+          Values: ["/create_report*"]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TGReportService
+
+  RuleBeanProducts:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref SharedListener
+      Priority: 30
+      Conditions:
+        - Field: path-pattern
+          Values: ["/bean_products*"]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TGReportService
+
+  RuleStaticWeb:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref SharedListener
+      Priority: 40
+      Conditions:
+        - Field: path-pattern
+          Values: ["/web*"]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TGStaticWeb
+
+  # /images* → nginx para imágenes referenciadas con ruta absoluta en el HTML
+  RuleImages:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref SharedListener
+      Priority: 50
+      Conditions:
+        - Field: path-pattern
+          Values: ["/images*"]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TGStaticWeb
+
+  # ───────────────────────────────────────────
+  # ECS TASK DEFINITIONS
+  # ───────────────────────────────────────────
+
+  TaskDefNodeWebApp:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: "cafe-node-web-app"
+      Cpu: "512"
+      Memory: "1024"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !Ref LabRoleArn
+      TaskRoleArn: !Ref LabRoleArn
+      ContainerDefinitions:
+        - Name: "node-web-app"
+          Image: "PLACEHOLDER.dkr.ecr.us-east-1.amazonaws.com/cafe/node-web-app:latest"
+          Essential: true
+          PortMappings:
+            - ContainerPort: 3000
+              Protocol: tcp
+          Environment:
+            - Name: APP_DB_HOST
+              Value: "PLACEHOLDER_AURORA_ENDPOINT"
+            - Name: MEMC_HOST
+              Value: "PLACEHOLDER_MEMCACHED_HOST:11211"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: "/ecs/cafe-node-web-app"
+              awslogs-region: "us-east-1"
+              awslogs-stream-prefix: "ecs"
+
+  TaskDefStaticWeb:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: "cafe-static-web"
+      Cpu: "256"
+      Memory: "512"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !Ref LabRoleArn
+      TaskRoleArn: !Ref LabRoleArn
+      ContainerDefinitions:
+        - Name: "static-web"
+          Image: "PLACEHOLDER.dkr.ecr.us-east-1.amazonaws.com/cafe/static-web:latest"
+          Essential: true
+          PortMappings:
+            - ContainerPort: 80
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: "/ecs/cafe-static-web"
+              awslogs-region: "us-east-1"
+              awslogs-stream-prefix: "ecs"
+
+  TaskDefProductsApi:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: "cafe-products-api"
+      Cpu: "256"
+      Memory: "512"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !Ref LabRoleArn
+      TaskRoleArn: !Ref LabRoleArn
+      ContainerDefinitions:
+        - Name: "products-api"
+          Image: "PLACEHOLDER.dkr.ecr.us-east-1.amazonaws.com/cafe/products-api:latest"
+          Essential: true
+          PortMappings:
+            - ContainerPort: 5000
+              Protocol: tcp
+          Environment:
+            - Name: AWS_DEFAULT_REGION
+              Value: "us-east-1"
+            - Name: DYNAMODB_TABLE
+              Value: "FoodProducts"
+            - Name: DYNAMODB_INDEX
+              Value: "special_GSI"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: "/ecs/cafe-products-api"
+              awslogs-region: "us-east-1"
+              awslogs-stream-prefix: "ecs"
+
+  TaskDefReportService:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: "cafe-report-service"
+      Cpu: "256"
+      Memory: "512"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !Ref LabRoleArn
+      TaskRoleArn: !Ref LabRoleArn
+      ContainerDefinitions:
+        - Name: "report-service"
+          Image: "PLACEHOLDER.dkr.ecr.us-east-1.amazonaws.com/cafe/report-service:latest"
+          Essential: true
+          PortMappings:
+            - ContainerPort: 5000
+              Protocol: tcp
+          Environment:
+            - Name: AWS_DEFAULT_REGION
+              Value: "us-east-1"
+            - Name: REPORT_BUCKET_NAME
+              Value: "PLACEHOLDER_REPORTS_BUCKET"
+            - Name: SNS_TOPIC_ARN
+              Value: "PLACEHOLDER_SNS_ARN"
+            - Name: REPORT_KEY
+              Value: "report.html"
+            - Name: PRESIGNED_EXPIRY_SECONDS
+              Value: "3600"
+            - Name: DB_HOST
+              Value: "PLACEHOLDER_AURORA_ENDPOINT"
+            - Name: DB_USER
+              Value: "admin"
+            - Name: DB_PASSWORD
+              Value: "coffee_beans_for_all"
+            - Name: DB_NAME
+              Value: "COFFEE"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: "/ecs/cafe-report-service"
+              awslogs-region: "us-east-1"
+              awslogs-stream-prefix: "ecs"
+
+  TaskDefSqsWorker:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: "cafe-sqs-worker"
+      Cpu: "256"
+      Memory: "512"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !Ref LabRoleArn
+      TaskRoleArn: !Ref LabRoleArn
+      ContainerDefinitions:
+        - Name: "sqs-worker"
+          Image: "PLACEHOLDER.dkr.ecr.us-east-1.amazonaws.com/cafe/report-service:latest"
+          Essential: true
+          Command: ["python3", "sqs_worker.py"]
+          Environment:
+            - Name: AWS_DEFAULT_REGION
+              Value: "us-east-1"
+            - Name: SQS_QUEUE_URL
+              Value: "PLACEHOLDER_SQS_QUEUE_URL"
+            - Name: DB_HOST
+              Value: "PLACEHOLDER_AURORA_ENDPOINT"
+            - Name: DB_USER
+              Value: "admin"
+            - Name: DB_PASSWORD
+              Value: "coffee_beans_for_all"
+            - Name: DB_NAME
+              Value: "COFFEE"
+            - Name: MEMC_HOST
+              Value: "PLACEHOLDER_MEMCACHED_HOST:11211"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: "/ecs/cafe-sqs-worker"
+              awslogs-region: "us-east-1"
+              awslogs-stream-prefix: "ecs"
+
+  # ───────────────────────────────────────────
+  # ECS SERVICES
+  # DesiredCount=0 - el script lo sube a 1
+  # ───────────────────────────────────────────
+
+  ServiceNodeWebApp:
+    Type: AWS::ECS::Service
+    DependsOn: SharedListener
+    Properties:
+      ServiceName: "cafe-node-web-app"
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefNodeWebApp
+      DesiredCount: 0
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref PublicSubnetOne
+            - !Ref ExtraSubnet
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+      LoadBalancers:
+        - ContainerName: "node-web-app"
+          ContainerPort: 3000
+          TargetGroupArn: !Ref TGNodeWebApp
+
+  ServiceStaticWeb:
+    Type: AWS::ECS::Service
+    DependsOn: RuleStaticWeb
+    Properties:
+      ServiceName: "cafe-static-web"
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefStaticWeb
+      DesiredCount: 0
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref PublicSubnetOne
+            - !Ref ExtraSubnet
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+      LoadBalancers:
+        - ContainerName: "static-web"
+          ContainerPort: 80
+          TargetGroupArn: !Ref TGStaticWeb
+
+  ServiceProductsApi:
+    Type: AWS::ECS::Service
+    DependsOn: RuleProductsApi
+    Properties:
+      ServiceName: "cafe-products-api"
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefProductsApi
+      DesiredCount: 0
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref PublicSubnetOne
+            - !Ref ExtraSubnet
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+      LoadBalancers:
+        - ContainerName: "products-api"
+          ContainerPort: 5000
+          TargetGroupArn: !Ref TGProductsApi
+
+  ServiceReportService:
+    Type: AWS::ECS::Service
+    DependsOn: RuleCreateReport
+    Properties:
+      ServiceName: "cafe-report-service"
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefReportService
+      DesiredCount: 0
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref PublicSubnetOne
+            - !Ref ExtraSubnet
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+      LoadBalancers:
+        - ContainerName: "report-service"
+          ContainerPort: 5000
+          TargetGroupArn: !Ref TGReportService
+
+  ServiceSqsWorker:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: "cafe-sqs-worker"
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefSqsWorker
+      DesiredCount: 0
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref PublicSubnetOne
+            - !Ref ExtraSubnet
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+
+  # ───────────────────────────────────────────
+  # S3 - solo bucket de reportes
+  # ───────────────────────────────────────────
+
+  S3BucketReports:
+    Type: AWS::S3::Bucket
+    Properties:
+      Tags:
+        - Key: Name
+          Value: cafe-reports-bucket
+
+  # ───────────────────────────────────────────
+  # DYNAMODB
+  # ───────────────────────────────────────────
+
+  myDynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: "FoodProducts"
+      AttributeDefinitions:
+        - AttributeName: "product_name"
+          AttributeType: "S"
+        - AttributeName: "special"
+          AttributeType: "N"
+      KeySchema:
+        - AttributeName: "product_name"
+          KeyType: "HASH"
+      ProvisionedThroughput:
+        ReadCapacityUnits: "1"
+        WriteCapacityUnits: "1"
+      GlobalSecondaryIndexes:
+        - IndexName: "special_GSI"
+          KeySchema:
+            - AttributeName: "special"
+              KeyType: "HASH"
+          Projection:
+            ProjectionType: "ALL"
+          ProvisionedThroughput:
+            ReadCapacityUnits: "1"
+            WriteCapacityUnits: "1"
+
+  # ───────────────────────────────────────────
+  # AURORA
+  # ───────────────────────────────────────────
+
+  RDSCluster:
+    Type: AWS::RDS::DBCluster
+    DependsOn: DBSubnetGroup
+    Properties:
+      DatabaseName: suppliers
+      DBClusterIdentifier: "supplierDB"
+      Engine: aurora-mysql
+      EngineMode: provisioned
+      EngineVersion: "8.0.mysql_aurora.3.08.0"
+      MasterUsername: "admin"
+      MasterUserPassword: "coffee_beans_for_all"
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        - !GetAtt DataSecurityGroup.GroupId
+      AvailabilityZones:
+        - !Select [0, !GetAZs ""]
+        - !Select [1, !GetAZs ""]
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref RDSCluster
+      DBInstanceIdentifier: "supplierdb-instance-1"
+      Engine: aurora-mysql
+      DBInstanceClass: db.t3.medium
+      PubliclyAccessible: false
+
+  # ───────────────────────────────────────────
+  # ELASTICACHE - Memcached
+  # ───────────────────────────────────────────
+
+  MemcachedClusterSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      CacheSubnetGroupName: "MyMemcachedSubnet"
+      Description: "Subnets for Memcached"
+      SubnetIds:
+        - !Ref ExtraSubnet
+        - !Ref PublicSubnetOne
+
+  MemcachedCluster:
+    Type: AWS::ElastiCache::CacheCluster
+    DependsOn: [RDSCluster, MemcachedClusterSubnetGroup]
+    Properties:
+      CacheNodeType: cache.t3.micro
+      CacheSubnetGroupName: "MyMemcachedSubnet"
+      ClusterName: "Memcached"
+      Engine: memcached
+      EngineVersion: "1.6.6"
+      NumCacheNodes: 1
+      Port: 11211
+      VpcSecurityGroupIds:
+        - !GetAtt DataSecurityGroup.GroupId
+
+  # ───────────────────────────────────────────
+  # SNS
+  # ───────────────────────────────────────────
+
+  SNSForSendingEmail:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: "Email Report"
+      FifoTopic: false
+      TopicName: email
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref StudentEmail
+
+  SNSInventoryTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: "updated_beans_sns.fifo"
+      FifoTopic: true
+      ContentBasedDeduplication: true
+
+  # ───────────────────────────────────────────
+  # SQS
+  # ───────────────────────────────────────────
+
+  SQSInventoryDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: "inventory-dlq.fifo"
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      MessageRetentionPeriod: 86400
+
+  SQSInventoryQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: "inventory-queue.fifo"
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      VisibilityTimeout: 30
+      MessageRetentionPeriod: 86400
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt SQSInventoryDLQ.Arn
+        maxReceiveCount: 3
+
+  SQSInventoryQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref SQSInventoryQueue
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt SQSInventoryQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref SNSInventoryTopic
+
+  SNSToSQSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref SNSInventoryTopic
+      Protocol: sqs
+      Endpoint: !GetAtt SQSInventoryQueue.Arn
+      RawMessageDelivery: false
+
+  # ───────────────────────────────────────────
+  # ECR
+  # ───────────────────────────────────────────
+
+  ECRStaticWeb:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: "cafe/static-web"
+      RepositoryPolicyText:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowPushPull
+            Effect: Allow
+            Principal:
+              AWS: "*"
+            Action: "ecr:*"
+
+  ECRNodeWebApp:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: "cafe/node-web-app"
+      RepositoryPolicyText:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowPushPull
+            Effect: Allow
+            Principal:
+              AWS: "*"
+            Action: "ecr:*"
+
+  ECRProductsApi:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: "cafe/products-api"
+      RepositoryPolicyText:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowPushPull
+            Effect: Allow
+            Principal:
+              AWS: "*"
+            Action: "ecr:*"
+
+  ECRReportService:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: "cafe/report-service"
+      RepositoryPolicyText:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowPushPull
+            Effect: Allow
+            Principal:
+              AWS: "*"
+            Action: "ecr:*"
+
+  # ───────────────────────────────────────────
+  # COGNITO
+  # Callback → /web/callback.html (nginx)
+  # ───────────────────────────────────────────
+
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: admin_only
+            Priority: 1
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      AliasAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 7
+      UsernameConfiguration:
+        CaseSensitive: false
+      UserPoolName: "the_cafe"
+
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub "cafe-${AWS::AccountId}"
+      UserPoolId: !Ref CognitoUserPool
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: CognitoUserPoolDomain
+    Properties:
+      AllowedOAuthFlows: [implicit]
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes: [email, openid]
+      CallbackURLs:
+        - !Sub "https://${SharedALB.DNSName}/web/callback.html"
+      ClientName: "the_cafe_app_client"
+      DefaultRedirectURI: !Sub "https://${SharedALB.DNSName}/web/callback.html"
+      LogoutURLs:
+        - !Sub "https://${SharedALB.DNSName}/web/callback.html"
+      SupportedIdentityProviders: [COGNITO]
+      UserPoolId: !Ref CognitoUserPool
+
+Outputs:
+
+  ECSClusterName:
+    Description: "Nombre del cluster ECS"
+    Value: !Ref ECSCluster
+    Export:
+      Name: ECSClusterName
+
+  SharedALBDNS:
+    Description: "DNS del ALB - punto de entrada principal"
+    Value: !GetAtt SharedALB.DNSName
+    Export:
+      Name: SharedALBDNS
+
+  AuroraEndpoint:
+    Description: "Aurora endpoint"
+    Value: !GetAtt RDSCluster.Endpoint.Address
+    Export:
+      Name: AuroraEndpoint
+
+  S3ReportsBucket:
+    Description: "Bucket reportes"
+    Value: !Ref S3BucketReports
+    Export:
+      Name: S3ReportsBucket
+
+  SNSEmailTopicArn:
+    Description: "ARN SNS reportes por email"
+    Value: !Ref SNSForSendingEmail
+    Export:
+      Name: SNSEmailTopicArn
+
+  SNSInventoryTopicArn:
+    Description: "ARN SNS FIFO para actualizaciones de inventario"
+    Value: !Ref SNSInventoryTopic
+    Export:
+      Name: SNSInventoryTopicArn
+
+  SQSInventoryQueueUrl:
+    Description: "URL de la cola SQS FIFO de inventario"
+    Value: !Ref SQSInventoryQueue
+    Export:
+      Name: SQSInventoryQueueUrl
+
+  SQSInventoryDLQUrl:
+    Description: "URL de la Dead Letter Queue de inventario"
+    Value: !Ref SQSInventoryDLQ
+    Export:
+      Name: SQSInventoryDLQUrl
