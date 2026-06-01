@@ -1,4 +1,9 @@
+from pathlib import Path
+
 import boto3, json
+
+
+BASE_DIR = Path(__file__).resolve().parent
 
 
 def batch_put(food_list):
@@ -27,7 +32,7 @@ def batch_put(food_list):
             batch.put_item(Item=formatted_data)
 
 if __name__ == '__main__':
-    with open("resources/website/all_products.json") as json_file:
+    with open(BASE_DIR / "website" / "all_products.json") as json_file:
         food_list = json.load(json_file)["product_item_arr"]
     batch_put(food_list)
 
