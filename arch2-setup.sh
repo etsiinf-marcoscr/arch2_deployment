@@ -28,6 +28,8 @@ echo "============================================="
 STACK_NAME="arch2"
 REGION="us-east-1"
 MYPASS="coffee_beans_for_all"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESOURCES_DIR="$SCRIPT_DIR/resources"
 
 # VPC y subnet se obtienen automaticamente desde los metadatos de la EC2
 TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
@@ -140,9 +142,9 @@ if [ -z "$ECS_CLUSTER" ] || [ -z "$AURORA_ENDPOINT" ] || \
   exit 1
 fi
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # 2. Asociar route table publica a ExtraSubnet
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 echo ""
 echo ">>> Asociando route table publica a ExtraSubnet (AZ2)..."
 
@@ -199,7 +201,7 @@ aws ecr get-login-password --region "$REGION" \
 # ---------------------------------------------
 echo ""
 echo ">>> Build node-web-app..."
-cd /home/ec2-user/resources/codebase_partner
+cd "$RESOURCES_DIR/codebase_partner"
 
 cat > Dockerfile <<'DOCKERFILE'
 FROM node:11-alpine
@@ -220,7 +222,7 @@ docker push "${ECR_BASE}/cafe/node-web-app"
 # ---------------------------------------------
 echo ""
 echo ">>> Build products-api..."
-cd /home/ec2-user/resources/products_api
+cd "$RESOURCES_DIR/products_api"
 
 docker build --tag cafe/products-api .
 docker tag cafe/products-api:latest "${ECR_BASE}/cafe/products-api:latest"
@@ -231,7 +233,7 @@ docker push "${ECR_BASE}/cafe/products-api"
 # ---------------------------------------------
 echo ""
 echo ">>> Build report-service..."
-cd /home/ec2-user/resources/report_service
+cd "$RESOURCES_DIR/report_service"
 
 docker build --tag cafe/report-service .
 docker tag cafe/report-service:latest "${ECR_BASE}/cafe/report-service:latest"
@@ -261,7 +263,7 @@ COGNITO_DOMAIN=$(aws cognito-idp describe-user-pool \
 CALLBACK_URL="https://${SHARED_ALB_DNS}/web/callback.html"
 COGNITO_LOGIN_URL="https://${COGNITO_DOMAIN}.auth.${REGION}.amazoncognito.com/login?client_id=${COGNITO_CLIENT_ID}&response_type=token&scope=email+openid&redirect_uri=${CALLBACK_URL}"
 
-cat > /home/ec2-user/resources/website/config.js << EOF
+cat > "$RESOURCES_DIR/website/config.js" << EOF
 window.COFFEE_CONFIG = {
         API_GW_BASE_URL_STR: "https://${SHARED_ALB_DNS}",
         API_GW_REPORT_URL_STR: "https://${SHARED_ALB_DNS}",
@@ -270,18 +272,18 @@ window.COFFEE_CONFIG = {
 EOF
 
 echo "config.js generado:"
-cat /home/ec2-user/resources/website/config.js
+cat "$RESOURCES_DIR/website/config.js"
 
 # Separar el montaje de la web estatica en otro directorio para el Dockerfile de nginx
-mkdir -p /home/ec2-user/resources/static_web/website
-cp -r /home/ec2-user/resources/website/. \
-      /home/ec2-user/resources/static_web/website/
+mkdir -p "$RESOURCES_DIR/static_web/website"
+cp -r "$RESOURCES_DIR/website/." \
+  "$RESOURCES_DIR/static_web/website/"
 
 # nginx sirve:
 #   /web/*    -> assets bajo /usr/share/nginx/html/web/
 #   /images/* -> imagenes referenciadas con ruta absoluta desde el HTML (root apunta a /web/ para que /images/ resuelva correctamente)
 #   /         -> redireccion 301 a /web/
-cat > /home/ec2-user/resources/static_web/Dockerfile << 'DOCKERFILE'
+cat > "$RESOURCES_DIR/static_web/Dockerfile" << 'DOCKERFILE'
 FROM nginx:alpine
 
 COPY website/ /usr/share/nginx/html/web/
@@ -308,7 +310,7 @@ EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
 DOCKERFILE
 
-cd /home/ec2-user/resources/static_web
+cd "$RESOURCES_DIR/static_web"
 docker build --tag cafe/static-web .
 docker tag cafe/static-web:latest "${ECR_BASE}/cafe/static-web:latest"
 docker push "${ECR_BASE}/cafe/static-web"
@@ -337,7 +339,7 @@ FLUSH PRIVILEGES;
 EOF
 
 mysql -h "$AURORA_ENDPOINT" -P 3306 -u admin -p"$MYPASS" COFFEE \
-  < /home/ec2-user/resources/coffee_db_dump.sql
+  < "$RESOURCES_DIR/coffee_db_dump.sql"
 echo "Aurora poblada."
 
 # ---------------------------------------------
@@ -345,8 +347,7 @@ echo "Aurora poblada."
 # ---------------------------------------------
 echo ""
 echo ">>> Poblando DynamoDB con productos..."
-cd /home/ec2-user
-python3 resources/seed.py
+python3 "$RESOURCES_DIR/seed.py"
 echo "DynamoDB poblado."
 
 # ---------------------------------------------
