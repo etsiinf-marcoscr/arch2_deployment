@@ -1,17 +1,14 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: "Cafe architecture - ECS Fargate sin CloudFront (ALB como punto de entrada)"
-# REQUISITO PREVIO: la VPC debe tener habilitados
-# 'DNS resolution' y 'DNS hostnames' antes de desplegar este stack.
-#
 # Punto de entrada: http://<SharedALBDNS>  /  https://<SharedALBDNS>
-#   /              → node-web-app    (app Node.js de proveedores)
-#   /web*          → cafe-static-web (nginx, web estática bakeada)
-#   /images*       → cafe-static-web (nginx, imágenes con ruta absoluta)
-#   /products*     → products-api    (Flask, DynamoDB)
-#   /create_report*→ report-service  (Flask, Aurora + S3 + SNS)
-#   /bean_products*→ report-service
+#   /              -> node-web-app    (app Node.js de proveedores)
+#   /web*          -> cafe-static-web (nginx, web estatica bakeada)
+#   /images*       -> cafe-static-web (nginx, imagenes con ruta absoluta)
+#   /products*     -> products-api    (Flask, DynamoDB)
+#   /create_report*-> report-service  (Flask, Aurora + S3 + SNS)
+#   /bean_products*-> report-service
 #
-# Cognito callback → https://<ALB>/web/callback.html (servido por nginx)
+# Cognito callback -> https://<ALB>/web/callback.html (servido por nginx)
 
 Parameters:
 
@@ -21,7 +18,7 @@ Parameters:
 
   PublicSubnetOne:
     Type: AWS::EC2::Subnet::Id
-    Description: "Subnet pública principal (us-east-1a)"
+    Description: "Subnet publica principal (us-east-1a)"
 
   StudentEmail:
     Type: String
@@ -33,9 +30,9 @@ Parameters:
 
 Resources:
 
-  # ───────────────────────────────────────────
+  # -------------------------------------------
   # NETWORKING
-  # ───────────────────────────────────────────
+  # -------------------------------------------
 
   ExtraSubnet:
     Type: AWS::EC2::Subnet
@@ -47,6 +44,8 @@ Resources:
       Tags:
         - Key: Name
           Value: "ExtraSubnet-AZ2"
+        - Key: Stack
+          Value: "arch2ll"
 
   DBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
@@ -70,6 +69,9 @@ Resources:
           FromPort: 11211
           ToPort: 11211
       VpcId: !Ref VpcId
+      Tags:
+        - Key: Stack
+          Value: "arch2ll"
 
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -85,11 +87,14 @@ Resources:
           FromPort: 443
           ToPort: 443
       VpcId: !Ref VpcId
+      Tags:
+        - Key: Stack
+          Value: "arch2ll"
 
   ECSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: "ECS Fargate tasks, trafico desde el ALB"
+      GroupDescription: "ECS Fargate, trafico desde el ALB"
       SecurityGroupIngress:
         - SourceSecurityGroupId: !Ref ALBSecurityGroup
           IpProtocol: tcp
@@ -104,10 +109,13 @@ Resources:
           FromPort: 5000
           ToPort: 5000
       VpcId: !Ref VpcId
+      Tags:
+        - Key: Stack
+          Value: "arch2ll"
 
-  # ───────────────────────────────────────────
+  # -------------------------------------------
   # CLOUDWATCH LOGS
-  # ───────────────────────────────────────────
+  # -------------------------------------------
 
   LogGroupStaticWeb:
     Type: AWS::Logs::LogGroup
@@ -139,9 +147,9 @@ Resources:
       LogGroupName: "/ecs/cafe-sqs-worker"
       RetentionInDays: 1
 
-  # ───────────────────────────────────────────
+  # -------------------------------------------
   # ECS CLUSTER
-  # ───────────────────────────────────────────
+  # -------------------------------------------
 
   ECSCluster:
     Type: AWS::ECS::Cluster
@@ -154,17 +162,17 @@ Resources:
         - CapacityProvider: FARGATE
           Weight: 1
 
-  # ───────────────────────────────────────────
+  # -------------------------------------------
   # ALB ÚNICO - path-based routing
   #
-  # Prioridades listener HTTP (HTTPS idéntico, creado en el script):
-  #   prio 10 → /products*      → products-api
-  #   prio 20 → /create_report* → report-service
-  #   prio 30 → /bean_products* → report-service
-  #   prio 40 → /web*           → static-web (nginx)
-  #   prio 50 → /images*        → static-web (nginx, rutas absolutas)
-  #   default → /               → node-web-app
-  # ───────────────────────────────────────────
+  # Prioridades listener HTTP (HTTPS identico, creado en el script):
+  #    10 -> /products*      -> products-api
+  #    20 -> /create_report* -> report-service
+  #    30 -> /bean_products* -> report-service
+  #    40 -> /web*           -> static-web (nginx)
+  #    50 -> /images*        -> static-web (nginx, rutas absolutas)
+  #   default -> /               -> node-web-app
+  # -------------------------------------------
 
   SharedALB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
@@ -180,6 +188,8 @@ Resources:
 
   TGNodeWebApp:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Name: "cafe-node-web-app-tg"
       Port: 3000
@@ -192,6 +202,8 @@ Resources:
 
   TGStaticWeb:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Name: "cafe-static-web-tg"
       Port: 80
@@ -204,6 +216,8 @@ Resources:
 
   TGProductsApi:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Name: "cafe-products-api-tg"
       Port: 5000
@@ -216,6 +230,8 @@ Resources:
 
   TGReportService:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Name: "cafe-report-service-tg"
       Port: 5000
@@ -287,7 +303,7 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref TGStaticWeb
 
-  # /images* → nginx para imágenes referenciadas con ruta absoluta en el HTML
+  # /images* -> nginx para imagenes referenciadas con ruta absoluta en el HTML
   RuleImages:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
     Properties:
@@ -300,9 +316,9 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref TGStaticWeb
 
-  # ───────────────────────────────────────────
+  # -------------------------------------------
   # ECS TASK DEFINITIONS
-  # ───────────────────────────────────────────
+  # -------------------------------------------
 
   TaskDefNodeWebApp:
     Type: AWS::ECS::TaskDefinition
@@ -468,10 +484,10 @@ Resources:
               awslogs-region: "us-east-1"
               awslogs-stream-prefix: "ecs"
 
-  # ───────────────────────────────────────────
+  # -------------------------------------------
   # ECS SERVICES
   # DesiredCount=0 - el script lo sube a 1
-  # ───────────────────────────────────────────
+  # -------------------------------------------
 
   ServiceNodeWebApp:
     Type: AWS::ECS::Service
@@ -578,20 +594,18 @@ Resources:
           SecurityGroups:
             - !Ref ECSSecurityGroup
 
-  # ───────────────────────────────────────────
-  # S3 - solo bucket de reportes
-  # ───────────────────────────────────────────
+  # -------------------------------------------
+  # S3 - bucket de reportes
+  # -------------------------------------------
 
   S3BucketReports:
     Type: AWS::S3::Bucket
-    Properties:
-      Tags:
-        - Key: Name
-          Value: cafe-reports-bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
 
-  # ───────────────────────────────────────────
+  # -------------------------------------------
   # DYNAMODB
-  # ───────────────────────────────────────────
+  # -------------------------------------------
 
   myDynamoDBTable:
     Type: AWS::DynamoDB::Table
@@ -619,9 +633,9 @@ Resources:
             ReadCapacityUnits: "1"
             WriteCapacityUnits: "1"
 
-  # ───────────────────────────────────────────
+  # -------------------------------------------
   # AURORA
-  # ───────────────────────────────────────────
+  # -------------------------------------------
 
   RDSCluster:
     Type: AWS::RDS::DBCluster
@@ -650,9 +664,9 @@ Resources:
       DBInstanceClass: db.t3.medium
       PubliclyAccessible: false
 
-  # ───────────────────────────────────────────
+  # -------------------------------------------
   # ELASTICACHE - Memcached
-  # ───────────────────────────────────────────
+  # -------------------------------------------
 
   MemcachedClusterSubnetGroup:
     Type: AWS::ElastiCache::SubnetGroup
@@ -677,9 +691,9 @@ Resources:
       VpcSecurityGroupIds:
         - !GetAtt DataSecurityGroup.GroupId
 
-  # ───────────────────────────────────────────
+  # -------------------------------------------
   # SNS
-  # ───────────────────────────────────────────
+  # -------------------------------------------
 
   SNSForSendingEmail:
     Type: AWS::SNS::Topic
@@ -698,9 +712,9 @@ Resources:
       FifoTopic: true
       ContentBasedDeduplication: true
 
-  # ───────────────────────────────────────────
+  # -------------------------------------------
   # SQS
-  # ───────────────────────────────────────────
+  # -------------------------------------------
 
   SQSInventoryDLQ:
     Type: AWS::SQS::Queue
@@ -708,7 +722,7 @@ Resources:
       QueueName: "inventory-dlq.fifo"
       FifoQueue: true
       ContentBasedDeduplication: true
-      MessageRetentionPeriod: 86400
+      MessageRetentionPeriod: 86400   # 1 dia
 
   SQSInventoryQueue:
     Type: AWS::SQS::Queue
@@ -746,14 +760,15 @@ Resources:
       Endpoint: !GetAtt SQSInventoryQueue.Arn
       RawMessageDelivery: false
 
-  # ───────────────────────────────────────────
+  # -------------------------------------------
   # ECR
-  # ───────────────────────────────────────────
+  # -------------------------------------------
 
   ECRStaticWeb:
     Type: AWS::ECR::Repository
     Properties:
       RepositoryName: "cafe/static-web"
+      EmptyOnDelete: true
       RepositoryPolicyText:
         Version: "2012-10-17"
         Statement:
@@ -767,6 +782,7 @@ Resources:
     Type: AWS::ECR::Repository
     Properties:
       RepositoryName: "cafe/node-web-app"
+      EmptyOnDelete: true
       RepositoryPolicyText:
         Version: "2012-10-17"
         Statement:
@@ -780,6 +796,7 @@ Resources:
     Type: AWS::ECR::Repository
     Properties:
       RepositoryName: "cafe/products-api"
+      EmptyOnDelete: true
       RepositoryPolicyText:
         Version: "2012-10-17"
         Statement:
@@ -793,6 +810,7 @@ Resources:
     Type: AWS::ECR::Repository
     Properties:
       RepositoryName: "cafe/report-service"
+      EmptyOnDelete: true
       RepositoryPolicyText:
         Version: "2012-10-17"
         Statement:
@@ -802,10 +820,10 @@ Resources:
               AWS: "*"
             Action: "ecr:*"
 
-  # ───────────────────────────────────────────
+  # -------------------------------------------
   # COGNITO
-  # Callback → /web/callback.html (nginx)
-  # ───────────────────────────────────────────
+  # Callback -> /web/callback.html (nginx)
+  # -------------------------------------------
 
   CognitoUserPool:
     Type: AWS::Cognito::UserPool

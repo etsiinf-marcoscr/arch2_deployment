@@ -5,3 +5,7 @@ __pycache__/
 
 # Ignore rollback_points directory
 rollback_points/
+
+# Ignore compressed bundles
+*.tar.gz
+*.zip

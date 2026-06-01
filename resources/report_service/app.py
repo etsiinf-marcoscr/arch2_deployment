@@ -49,7 +49,7 @@ def get_connection():
 
 
 # ─────────────────────────────────────────────
-# GET /bean_products — nuevo endpoint
+# GET /bean_products - nuevo endpoint
 # Devuelve el stock actual de la tabla beans.
 # Lo usa el node-web-app para mostrar el
 # inventario de proveedores actualizado.

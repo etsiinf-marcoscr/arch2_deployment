@@ -1,5 +1,5 @@
 """
-sqs_worker.py — Consumer SQS para actualizaciones de inventario de café.
+sqs_worker.py - Consumer SQS para actualizaciones de inventario de café.
 
 Equivale al consumer Node.js original del Beanstalk (app/sqs/consumer.js).
 Corre como proceso independiente en la misma EC2 que report_service.
@@ -47,17 +47,17 @@ DB_USER     = os.environ["DB_USER"]
 DB_PASSWORD = os.environ["DB_PASSWORD"]
 DB_NAME     = os.environ["DB_NAME"]
 
-# Memcached — opcional, solo si está disponible
+# Memcached - opcional, solo si está disponible
 MEMC_HOST = os.environ.get("MEMC_HOST", "")
 
-# Parámetros de polling — equivalentes al consumer.js original
+# Parámetros de polling - equivalentes al consumer.js original
 VISIBILITY_TIMEOUT = int(os.environ.get("VISIBILITY_TIMEOUT_IN_SEC", "30"))
 WAIT_TIME_SECONDS  = int(os.environ.get("LONG_POLL_WAIT_IN_SEC", "5"))
 MAX_MESSAGES       = 1   # igual que el original: un mensaje a la vez
 
 sqs_client = boto3.client("sqs", region_name=AWS_REGION)
 
-# Cliente Memcached (pymemcache) — se inicializa solo si MEMC_HOST está definido
+# Cliente Memcached (pymemcache) - se inicializa solo si MEMC_HOST está definido
 memc_client = None
 if MEMC_HOST:
     try:
@@ -66,7 +66,7 @@ if MEMC_HOST:
         memc_client = MemcacheClient((host, int(port)), connect_timeout=2, timeout=2)
         logger.info("Memcached conectado en %s", MEMC_HOST)
     except Exception as e:
-        logger.warning("No se pudo conectar a Memcached: %s — continuando sin caché", e)
+        logger.warning("No se pudo conectar a Memcached: %s - continuando sin caché", e)
 
 
 # ─────────────────────────────────────────────
@@ -102,7 +102,10 @@ def parse_message(raw_body):
 
     parts = [p.strip() for p in message.split(":")]
     if len(parts) != 3:
-        raise ValueError(f"Formato de mensaje inválido: '{message}' — se esperaba supplier_id:bean_type:quantity")
+        raise ValueError(f"Formato de mensaje inválido: '{message}' - se esperaba supplier_id:bean_type:quantity")
+    
+    if parts[2] < "0" or not parts[2].isdigit():
+        raise ValueError(f"Cantidad inválida en mensaje: '{message}' - se esperaba un número entero no negativo")
 
     return {
         "supplier_id": int(parts[0]),
@@ -243,10 +246,10 @@ def poll_loop():
                 # Fallo en parseo o BD → NO borrar el mensaje
                 # SQS lo devolverá a la cola tras el VisibilityTimeout
                 # Tras maxReceiveCount intentos irá a la DLQ
-                logger.error("Error procesando mensaje: %s — devolviendo a la cola", e)
+                logger.error("Error procesando mensaje: %s - devolviendo a la cola", e)
 
         except ClientError as e:
-            logger.error("Error en receive_message: %s — reintentando en 5s", e)
+            logger.error("Error en receive_message: %s - reintentando en 5s", e)
             time.sleep(5)
 
         except Exception as e:

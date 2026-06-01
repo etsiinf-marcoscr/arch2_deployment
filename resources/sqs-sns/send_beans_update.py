@@ -18,7 +18,7 @@ for message_data in file_handle:
         )
     
         print(response)
-    else:
+    elif quantity == 0:
         response = sns_client.publish(
             TopicArn=sns_topic,
             Message=message_data.strip(),
@@ -33,3 +33,5 @@ for message_data in file_handle:
         )
         
         print(response)
+    else:
+        print(f"Cantidad invalida en linea: '{message_data.strip()}' - se esperaba un numero entero no negativo")
