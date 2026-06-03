@@ -30,9 +30,9 @@ import boto3
 import pymysql
 from botocore.exceptions import ClientError
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Configuración
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [sqs_worker] %(levelname)s %(message)s"
@@ -69,9 +69,9 @@ if MEMC_HOST:
         logger.warning("No se pudo conectar a Memcached: %s - continuando sin caché", e)
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Conexión Aurora
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 def get_connection():
     return pymysql.connect(
@@ -84,12 +84,12 @@ def get_connection():
     )
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Parseo del mensaje
 # El mensaje llega envuelto en el JSON de SNS:
 # { "Message": "supplier_id:bean_type:quantity", ... }
 # Equivale a parse_message() del consumer.js
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 def parse_message(raw_body):
     """
@@ -114,10 +114,10 @@ def parse_message(raw_body):
     }
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Actualización en Aurora
 # Equivale a update_db() del consumer.js
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 def update_bean_quantity(supplier_id, bean_type, delta_quantity):
     """
@@ -169,10 +169,10 @@ def update_bean_quantity(supplier_id, bean_type, delta_quantity):
         raise RuntimeError(f"Error actualizando Aurora: {e}") from e
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Invalidación de caché Memcached
 # Equivale a clear_cache() del consumer.js
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 def invalidate_cache(bean_id):
     """
@@ -190,10 +190,10 @@ def invalidate_cache(bean_id):
         logger.warning("No se pudo invalidar caché Memcached: %s", e)
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Borrar mensaje de SQS tras éxito
 # Equivale a delete_item_from_sqs() del consumer.js
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 def delete_message(receipt_handle):
     try:
@@ -206,10 +206,10 @@ def delete_message(receipt_handle):
         logger.error("Error eliminando mensaje de SQS: %s", e)
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Bucle principal de polling
 # Equivale a read_message() del consumer.js
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 def poll_loop():
     logger.info("Worker SQS iniciado. Escuchando: %s", SQS_QUEUE_URL)
@@ -257,9 +257,9 @@ def poll_loop():
             time.sleep(5)
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Entrypoint
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 if __name__ == "__main__":
     if not SQS_QUEUE_URL:

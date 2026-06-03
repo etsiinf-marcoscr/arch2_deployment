@@ -1,7 +1,7 @@
 import boto3
 import sys
 
-sns_topic = "<SNS_TOPIC_ARN>"
+sns_topic = '<FMI>'
 sns_client = boto3.client('sns')
 file_name = sys.argv[1]
 file_handle = open(file_name)

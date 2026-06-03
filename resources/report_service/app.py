@@ -9,9 +9,9 @@ import pymysql
 from botocore.exceptions import ClientError
 from flask import Flask, jsonify
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Configuración
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -33,9 +33,9 @@ s3_client  = boto3.client("s3",  region_name=AWS_REGION)
 sns_client = boto3.client("sns", region_name=AWS_REGION)
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Helper de conexión a Aurora
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 def get_connection():
     return pymysql.connect(
@@ -48,12 +48,12 @@ def get_connection():
     )
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # GET /bean_products - nuevo endpoint
 # Devuelve el stock actual de la tabla beans.
 # Lo usa el node-web-app para mostrar el
 # inventario de proveedores actualizado.
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 @app.route("/bean_products", methods=["GET"])
 def get_bean_products():
@@ -83,9 +83,9 @@ def get_bean_products():
         return jsonify({"error": "Error al consultar beans", "detail": str(e)}), 500
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # POST /create_report
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 @app.route("/create_report", methods=["POST"])
 def create_report():
@@ -125,9 +125,9 @@ def create_report():
         return jsonify({"error": "Error interno", "detail": str(e)}), 500
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Consulta Aurora para el reporte
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 def fetch_data_from_db():
     try:
@@ -164,9 +164,9 @@ def _merge_data(suppliers, beans):
     return result
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Generación HTML + subida a S3
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 def generate_and_upload_html(data, key=None):
     html = _build_html(data)
@@ -249,9 +249,9 @@ html, body, section, h1, h2, h3, h4, p { margin: 0; padding: 0; }
 """
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Presigned URL
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 def generate_presigned_url(key):
     try:
@@ -266,9 +266,9 @@ def generate_presigned_url(key):
         raise S3UploadError(f"Error generando presigned URL: {e}") from e
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Notificación SNS
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 def send_sns_notification(presigned_url):
     try:
@@ -284,9 +284,9 @@ def send_sns_notification(presigned_url):
         logger.warning("No se pudo enviar la notificación SNS: %s", e)
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Excepciones personalizadas
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 class DatabaseError(Exception):
     pass

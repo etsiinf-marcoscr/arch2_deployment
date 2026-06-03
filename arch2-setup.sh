@@ -528,6 +528,13 @@ SQS_WORKER_TD_ARN=$(register_task_def "{
 }")
 echo "  sqs-worker TD:     $SQS_WORKER_TD_ARN"
 
+# Actualizar de paso el placeholder del script de envio de inventario a SNS
+# Se lee el fichero .template y se sobreescribe el .py con el valor real del SNS_TOPIC_ARN
+sed "s|<SNS_TOPIC_ARN>|${SNS_TOPIC_ARN}|g" \
+  "$RESOURCES_DIR/sqs-sns/send_inventory_update.py.template" \
+  > "$RESOURCES_DIR/sqs-sns/send_inventory_update.py"
+
+
 # ---------------------------------------------
 # 12. Actualizar servicios ECS
 # ---------------------------------------------
