@@ -1,6 +1,23 @@
 import boto3
 import sys
 
+'''
+Este script sirve para mandar actualizaciones de inventario de café al topic SNS
+para su posterior procesamiento por parte del worker SQS. El formato de cada linea
+del fichero de entrada debe ser el siguiente:
+<id_producto>:<nombre_producto>:<cantidad>
+Siendo id_producto (ejemplo: 1) un identificador unico del producto,
+nombre_producto el nombre del producto (ejemplo: "Arabica")
+y cantidad un numero entero no negativo (0 - sin stock, >0 - unidades a añadir al stock).
+
+Uso:
+python3 send_beans_update.py <nombre_fichero>
+Se proveen tres txts de ejemplo (2 invalidos, los primeros, y 1 valido, el último)
+
+Ejemplo de uso:
+python3 send_beans_update.py beans_update_3.txt
+'''
+
 sns_topic = "<SNS_TOPIC_ARN>"
 sns_client = boto3.client('sns')
 file_name = sys.argv[1]
