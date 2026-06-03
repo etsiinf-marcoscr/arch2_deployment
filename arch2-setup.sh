@@ -115,6 +115,7 @@ ECS_CLUSTER=$(get_output "ECSClusterName")
 AURORA_ENDPOINT=$(get_output "AuroraEndpoint")
 S3_REPORTS_BUCKET=$(get_output "S3ReportsBucket")
 SNS_TOPIC_ARN=$(get_output "SNSEmailTopicArn")
+SNS_INVENTORY_ARN=$(get_output "SNSInventoryTopicArn")
 SQS_QUEUE_URL=$(get_output "SQSInventoryQueueUrl")
 SHARED_ALB_DNS=$(get_output "SharedALBDNS")
 ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
@@ -529,8 +530,8 @@ SQS_WORKER_TD_ARN=$(register_task_def "{
 echo "  sqs-worker TD:     $SQS_WORKER_TD_ARN"
 
 # Actualizar de paso el placeholder del script de envio de inventario a SNS
-# Se lee el fichero .template y se sobreescribe el .py con el valor real del SNS_TOPIC_ARN
-sed "s|<SNS_TOPIC_ARN>|${SNS_TOPIC_ARN}|g" \
+# Se lee el fichero .template y se sobreescribe el .py con el valor real del SNS_INVENTORY_ARN
+sed "s|<SNS_TOPIC_ARN>|${SNS_INVENTORY_ARN}|g" \
   "$RESOURCES_DIR/sqs-sns/send_beans_update.py.template" \
   > "$RESOURCES_DIR/sqs-sns/send_beans_update.py"
 
@@ -845,7 +846,6 @@ aws sns tag-resource \
   --resource-arn "$SNS_TOPIC_ARN" \
   --tags "Key=${TAG_KEY},Value=${TAG_VALUE}"
 
-SNS_INVENTORY_ARN=$(get_output "SNSInventoryTopicArn")
 aws sns tag-resource \
   --resource-arn "$SNS_INVENTORY_ARN" \
   --tags "Key=${TAG_KEY},Value=${TAG_VALUE}"
