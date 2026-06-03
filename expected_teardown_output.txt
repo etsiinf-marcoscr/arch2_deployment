@@ -1,0 +1,26 @@
+=============================================
+ Cafe ECS Fargate - Teardown
+=============================================
+Stack encontrado en estado: CREATE_COMPLETE
+
+>>> Vaciando bucket S3 de reportes...
+  Bucket: arch2-s3bucketreports-hents2ygnimf
+delete: s3://arch2-s3bucketreports-hents2ygnimf/report-ef10b90828d94ffd955795a2459a5840.html
+delete: s3://arch2-s3bucketreports-hents2ygnimf/report-9d9a0be93e204ac3b4c4f74ffc6adc89.html
+  ✓ Objetos borrados
+  ✓ Bucket vaciado
+
+>>> Eliminando stack CloudFormation 'arch2'...
+  Esperando DELETE_COMPLETE (puede tardar 10-15 min)...
+  ✓ Stack eliminado
+
+>>> Eliminando Target Groups huérfanos...
+  ✓ cafe-node-web-app-tg borrado
+  ✓ cafe-static-web-tg borrado
+  ✓ cafe-products-api-tg borrado
+  ✓ cafe-report-service-tg borrado
+
+=============================================
+ Teardown completado
+ IMPORTANTE: Recuerde borrar esta instancia EC2, el certificado ACM generado y por ultimo eliminar la VPC 10.0.0.0/16
+=============================================
